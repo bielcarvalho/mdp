@@ -3,6 +3,7 @@ import time
 from os import path, walk
 import numpy as np
 
+GRID_WORLD = False
 states_idx = dict()
 states_name = []
 grid_idx = []
@@ -17,7 +18,7 @@ actions = {-1: 0,
            2: '<',
            3: 'v'}
 
-input_dir = path.realpath('TestGrid')
+input_dir = path.realpath('s68.net')
 
 
 class MDP:
@@ -26,25 +27,40 @@ class MDP:
         self.V = self.next_V = None
         self.epsilon = epsilon
         self.iter = self.initial_state = self.goal = self.run_time = -1
+        self.actions = 4 if GRID_WORLD else 0
 
         if num_states != 0:
             self.set_state_num(num_states)
 
         else:
             self.states = self.size = num_states
-            self.transitions = self.costs = None
+            self.transitions = self.predecessors = None
 
-        self.initial_policy = self.policy = None
+        self.costs = self.initial_policy = self.policy = self.old_policy = None
 
     def set_state_num(self, num_states):
         self.states = num_states
-        self.transitions = [[[] for _ in range(4)] for _ in range(self.states)]
-        self.costs = np.zeros((self.states, 4))
-        self.size = max(get_state_pos(states_name[-1])) + 1
+        if GRID_WORLD:
+            self.transitions = [[[] for _ in range(4)] for _ in range(self.states)]
+            self.predecessors = [[] for _ in range(self.states)]
+        else:
+            self.transitions, self.predecessors = [[[] for _ in range(self.states)] for _ in range(2)]
+            self.costs = None
+        if GRID_WORLD:
+            self.size = max(get_state_pos(states_name[-1])) + 1
         # self.costs = [[1.0 for _ in range(4)] for _ in range(self.states)]
+
+    def add_action_layer(self):
+        self.actions += 1
+        for s in range(self.states):
+            self.transitions[s].append([])
 
     def add_action(self, source: int, destination: int, action_idx: int, probability: float):
         self.transitions[source][action_idx].append((destination, probability))
+        self.predecessors[destination].append(source)
+
+    def new_cost(self):
+        self.costs = np.zeros((self.states, self.actions))
 
     def add_cost(self, source: int, action_idx: int, cost: float):
         self.costs[source][action_idx] = cost
@@ -59,9 +75,9 @@ class MDP:
         if state == self.goal:
             return -1, 0
 
-        Q_s = np.full(4, np.nan)
+        Q_s = np.full(self.actions, np.inf)
 
-        for action in range(4):
+        for action in range(self.actions):
             if self.transitions[state][action]:
                 # Q_s[action] = self.costs[state][action]
                 # for successor, probability in self.transitions[state][action]:
@@ -73,13 +89,15 @@ class MDP:
 
     def _init_var(self, policy=False):
         self.V = np.full(self.states, 30)
+        # self.V = np.zeros(self.states)
         self.V[self.goal] = 0
-        self.next_V = np.zeros(self.states)
+        self.next_V = self.V.copy()
         self.iter = 0
 
         if policy:
             # self.policy = np.array([self._get_proper_action(state) for state in range(self.states)], dtype=int)
             self.policy = self._make_proper_policy()
+            print(self.policy)
             # self.policy[self.goal] = -1
 
             # self.initial_policy = deepcopy(self.policy)
@@ -117,18 +135,19 @@ class MDP:
         #     states_grid_idx[x][y] = state
 
         def get_predecessors(state_idx):
-            x, y = get_state_pos(states_name[state_idx])
-            n1 = [x - 1, x + 1, x, x]
-            n2 = [y, y, y - 1, y + 1]
-            neighbours = []
-
-            for i in range(len(n1)):
-                if 0 <= n1[i] < self.size and 0 <= n2[i] < self.size and grid_idx[n1[i]][n2[i]] != -1:
-                    # n_idx = states_grid_idx[n1[i]][n2[i]]
-                    # if n_idx != -1 and policy[n_idx] == -1:
-                    neighbours.append(grid_idx[n1[i]][n2[i]])
-
-            return neighbours
+            # x, y = get_state_pos(states_name[state_idx])
+            # n1 = [x - 1, x + 1, x, x]
+            # n2 = [y, y, y - 1, y + 1]
+            # neighbours = []
+            #
+            # for i in range(len(n1)):
+            #     if 0 <= n1[i] < self.size and 0 <= n2[i] < self.size and grid_idx[n1[i]][n2[i]] != -1:
+            #         # n_idx = states_grid_idx[n1[i]][n2[i]]
+            #         # if n_idx != -1 and policy[n_idx] == -1:
+            #         neighbours.append(grid_idx[n1[i]][n2[i]])
+            #
+            # return neighbours
+            return self.predecessors[state_idx]
 
         policy = np.full(self.states, -1, dtype=int)
         policy[self.goal] = 0
@@ -145,12 +164,16 @@ class MDP:
         return policy
 
     def _get_proper_action(self, state, successor):
+        possible_actions = []
         for idx, action in enumerate(self.transitions[state]):
             if len(action) >= 1:
                 for transition in action:
                     if transition[0] == successor:
                         # if successors[0] != state:
-                        return idx
+                        possible_actions.append((transition[1], idx))
+                        # return idx
+        if possible_actions:
+            return max(possible_actions)[1]
         return 0
 
     def policy_iteration(self):
@@ -161,7 +184,7 @@ class MDP:
         # for state in range(self.states):
         #     self.policy[state] = self._bellman_backup(state)[0]
 
-        while not np.array_equal(old_policy, self.policy):
+        while True:
             self.iter += 1
             # print(self.iter, np.sum(old_policy == self.policy))
 
@@ -183,42 +206,60 @@ class MDP:
                     linear_system[state][succ] += prob
 
             self.V = np.linalg.solve(linear_system, res)
-            old_policy = self.policy.copy()
+            print(self.V)
+
             self.update_policy()
+
+            if np.array_equal(old_policy, self.policy):
+                break
+
+            old_policy = self.policy.copy()
         self.run_time = time.time() - start_time
-        return self.policy
+        return self.get_policy()
 
     def modified_policy_iteration(self):
-        start_time = time.time()
-        self._init_var(True)
-
-        # self.policy = [self._bellman_backup(state)[0] for state in range(self.states)]
-
-        # old_policy = [-1 for _ in range(self.states)]
         old_policy = np.full(self.states, -1, dtype=int)
+        start_time = time.time()
 
-        while not np.array_equal(old_policy, self.policy):
+        # def iteration_step():
+        #     self.iter += 1
+        #     self.evaluate_policy()
+        #     self.update_policy()
+        #
+        # self._init_var(True)
+        #
+        # # self.policy = [self._bellman_backup(state)[0] for state in range(self.states)]
+        #
+        # # old_policy = [-1 for _ in range(self.states)]
+        # iteration_step()
+        # # old_policy = np.full(self.states, -1, dtype=int)
+
+        while True: # DO-WHILE
             self.iter += 1
             # print(self.iter, np.sum(old_policy == self.policy))
             # new_V = self.V.copy()
 
             self.evaluate_policy()
 
-            self.V = self.next_V.copy()
             # self.V, self.aux_V = self.aux_V, self.V
             # print(np.array_equal(self.V, self.aux_V))
             # old_policy = deepcopy(self.policy)
             # old_policy, self.policy = self.policy, old_policy
-            old_policy = self.policy.copy()
 
             self.update_policy()
 
+            if np.array_equal(old_policy, self.policy):
+                break
+
+            old_policy = self.policy.copy()
+
         self.run_time = time.time() - start_time
-        return self.policy
+        return self.get_policy()
 
     def update_policy(self):
         for state in range(self.states):
             self.policy[state] = self._bellman_backup(state)[0]
+        print(self.policy)
 
     def evaluate_policy(self):
         for state in range(self.states):
@@ -227,6 +268,10 @@ class MDP:
                                                                              self.transitions[state][
                                                                                  self.policy[state]])
             # self.next_V[state] = self._bellman_backup(state)[1]
+
+        self.V = self.next_V.copy()
+
+        print(self.V)
 
     def get_policy(self):
         return list(self.policy)
@@ -254,11 +299,12 @@ def read_states():
         states_name.extend([name for name in line.split(', ')])
         line = input_file.readline().strip()
 
-    size = max(get_state_pos(states_name[-1])) + 1
-    grid_idx = [[-1 for _ in range(size)] for _ in range(size)]
-    for state in range(len(states_name)):
-        x, y = get_state_pos(states_name[state])
-        grid_idx[x][y] = state
+    if GRID_WORLD:
+        size = max(get_state_pos(states_name[-1])) + 1
+        grid_idx = [[-1 for _ in range(size)] for _ in range(size)]
+        for state in range(len(states_name)):
+            x, y = get_state_pos(states_name[state])
+            grid_idx[x][y] = state
 
     for i, state in enumerate(states_name):
         states_idx[state] = i
@@ -268,7 +314,13 @@ def read_states():
 
 def read_action(name):
     global mdp_problem
-    action_id = actions_name[name]
+    if GRID_WORLD:
+        action_id = actions_name[name]
+    else:
+        action_id = len(actions_name)
+        actions_name[name] = action_id
+        actions[action_id] = name
+        mdp_problem.add_action_layer()
     line = input_file.readline().strip()
     while not line.startswith('end'):
         src, dest, prob = line.split()[:3]
@@ -278,6 +330,7 @@ def read_action(name):
 
 def read_cost():
     global mdp_problem
+    mdp_problem.new_cost()
     line = input_file.readline().strip()
     while not line.startswith('end'):
         src, action, cost = line.split()
@@ -297,6 +350,12 @@ def read_state(initial=True):
 
 def read_input():
     try:
+        if not GRID_WORLD:
+            actions_name.clear()
+            # actions = {-1: '0'}
+            actions.clear()
+            actions[-1] = '0'
+
         while True:
             line = input_file.readline().strip()
             if line.startswith('states'):
@@ -309,7 +368,7 @@ def read_input():
                 read_state()
             elif line.startswith('goal'):
                 read_state(False)
-            elif line.startswith('Grid'):
+            elif line.startswith('Grid') or line.startswith('Policy'):
                 break
 
     except EOFError:
@@ -341,19 +400,29 @@ def print_res(policy, input_path, iteration):
         output_file.write(f'{key}: {val}\n')
 
     if mdp_problem.get_initial_policy() is not None:
-        output_file.write(f'\nInitial Grid\n')
-        policy_to_grid(mdp_problem.get_initial_policy())
+        # output_file.write(f'\nInitial Grid\n')
+        output_file.write(f'\nInitial Grid:\n' if GRID_WORLD else f'\nInitial Policy:\n')
+        print_policy(mdp_problem.get_initial_policy())
         # print_grid(policy_to_grid(mdp_problem.get_initial_policy(), size))
 
-    output_file.write(f'\nFinal Grid:\n')
-    policy_to_grid(policy)
+    output_file.write(f'\nFinal Grid:\n' if GRID_WORLD else f'\nFinal Policy:\n')
+    print_policy(policy)
 
     output_file.write(f'\nV:\n')
-    output_file.write(' '.join(state.center(18) for state in states_name) + '\n')
-    output_file.write(' '.join(['{:.4f}'.format(i).center(18) for i in mdp_problem.get_V()]) + '\n\n')
+    max_name_len = len(states_name[-1])
+    output_file.write(' '.join(state.center(max_name_len) for state in states_name) + '\n')
+    output_file.write(' '.join(['{:.2f}'.format(i).center(max_name_len) for i in mdp_problem.get_V()]) + '\n\n')
 
     stats_file.write('{};{};{};'.format(iteration, input_path, len(grid_idx)) +
                      ';'.join(to_str(val) for val in stats.values()) + '\n')
+
+
+def print_policy(policy):
+    if GRID_WORLD:
+        policy_to_grid(policy)
+    else:
+        max_name_len = len(states_name[-1])
+        output_file.write(' '.join(actions[i].center(max_name_len) for i in policy) + '\n')
 
 
 def policy_to_grid(policy):
@@ -378,6 +447,7 @@ def policy_to_grid(policy):
 
 def solve(input_path):
     read_input()
+    print(actions)
     print_res(mdp_problem.value_iteration(), input_path, 'Value Iteration')
     print_res(mdp_problem.modified_policy_iteration(), input_path, 'Modified Policy Iteration')
     # print_res(mdp_problem.policy_iteration(), input_path, 'Policy Iteration')
@@ -412,7 +482,7 @@ def solve(input_path):
 #
 # solve(path.basename(path.dirname(args['input_file'])), args['input_file'].rsplit('.', 1)[0].rsplit('_', 1)[1])
 
-stats_file = open(path.realpath('stats2.csv'), 'w')
+stats_file = open(path.realpath('stats3.csv'), 'w')
 if path.isdir(input_dir):
     files = [path.join(dp, f) for dp, dn, filenames in walk(input_dir)
              for f in filenames if path.splitext(f)[1].lower() == '.net']
