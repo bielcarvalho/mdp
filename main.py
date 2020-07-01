@@ -118,20 +118,21 @@ class MDP:
         return np.min(Q, axis=0)
 
     def _policy_matrices(self):
-        probability = np.empty((self.states, self.states))
+        probability = sp.lil_matrix((self.states, self.states))
         cost = np.zeros(self.states)
         for action in range(self.actions):
-            src_state_idx = np.nonzero(self.policy == action)[0]
+            src_states_idx = (self.policy == action).nonzero()[0]
 
-            if src_state_idx.size > 0:
-                try:
-                    probability[src_state_idx, :] = self.transitions[action][src_state_idx, :]
-                except ValueError:
-                    probability[src_state_idx, :] = self.transitions[action][src_state_idx, :].todense()
+            if src_states_idx.size > 0:
+                probability[src_states_idx, :] = self.transitions[action][src_states_idx, :]
+                # try:
+                #     probability[src_state_idx, :] = self.transitions[action][src_state_idx, :]
+                # except ValueError:
+                #     probability[src_state_idx, :] = self.transitions[action][src_state_idx, :].todense()
 
-                cost[src_state_idx] = self.costs[action][src_state_idx]
+                cost[src_states_idx] = self.costs[action][src_states_idx]
 
-        return probability, cost
+        return probability.tocsr(), cost
 
     def _init_var(self):
         self.V = np.ones(self.states)
@@ -140,9 +141,10 @@ class MDP:
         self.next_V = self.V.copy()
         self.iter = self.sub_iter = 0
 
+        # if sp.isspmatrix(self.transitions[0]):
+        #     self.transitions = [t.toarray() for t in self.transitions]
+
         if not sp.isspmatrix_csr(self.transitions[0]):
-            # for action in range(self.actions):
-            #     self.transitions[action] = sp.csr_matrix(self.transitions[action])
             self.transitions = [sp.csr_matrix(t) for t in self.transitions]
 
         # max_name_len = max(6, len(states_name[-1]))
@@ -312,10 +314,11 @@ class MDP:
 
     def iterative_policy_evaluation(self):
         max_res = self.epsilon
-
+        # t1 = time.time()
         probability, cost = self._policy_matrices()
-
-        # TODO: Implement bar logging
+        # print(f'Matrices {self.iter}: {time.time() - t1}')
+        # start = self.sub_iter
+        # t1 = time.time()
         while max_res >= self.epsilon:
             # print(self.iter, max_res)
 
@@ -339,6 +342,8 @@ class MDP:
 
             # print(max_res)
             # self.next_V[state] = self._bellman_backup(state)[1]
+        # t1 = time.time() - t1
+        # print(f'Iter {self.iter}: {t1/(self.sub_iter - start)}')
 
     def get_policy(self):
         return list(self.policy)
@@ -532,7 +537,7 @@ def equiv_policy(p1, p2, v):
 
     def get_succ_val(pol, st_idx):
         # succ = [j[0] for j in mdp_problem.transitions[st_idx][pol[st_idx]]]
-        succ = list(np.nonzero(mdp_problem.transitions[pol[st_idx]][st_idx, :]))
+        succ = list(np.nonzero(mdp_problem.transitions[pol[st_idx]][st_idx]))
         if not succ:
             return -1
         succ = [int(s) for s in succ[1]]
@@ -587,10 +592,10 @@ def solve():
     # p3 = mdp_problem.policy_iteration(initial_policy)
     # print_res(p3, 'Policy Iteration')
 
-    if p1 == p2:
-        print('Equal:', p1 == p2)
-    else:
-        print('Equiv:', equiv_policy(p1, p2, v))
+    # if p1 == p2:
+    #     print('Equal:', p1 == p2)
+    # else:
+    #     print('Equiv:', equiv_policy(p1, p2, v))
 
 
 def get_basedir_name(dir_path):
