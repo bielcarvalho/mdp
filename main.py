@@ -5,6 +5,8 @@ from os import path, walk, makedirs
 import numpy as np
 
 # GRID_WORLD = True
+from scipy import sparse as sp
+
 states_idx = dict()
 states_name = []
 grid_idx = []
@@ -33,45 +35,56 @@ class MDP:
     def __init__(self, num_states=0, epsilon=0.1):
         self.V = self.next_V = None
         self.epsilon = epsilon
-        self.iter = self.sub_iter = self.initial_state = self.goal = self.run_time = -1
-        self.actions = 4 if GRID_WORLD else 0
+        self.iter = self.sub_iter = self.initial_state = self.goal = self.run_time = self.states = -1
+        # self.actions = 4 if GRID_WORLD else 0
+        self.actions = 0
 
         if num_states != 0:
             self.set_state_num(num_states)
 
         else:
-            self.states = self.size = num_states
+            self.states = num_states
             self.transitions = self.predecessors = None
 
         self.costs = self.initial_policy = self.policy = self.old_policy = None
 
     def set_state_num(self, num_states):
         self.states = num_states
-        if GRID_WORLD:
-            self.transitions = [[[] for _ in range(4)] for _ in range(self.states)]
-            self.predecessors = [[] for _ in range(self.states)]
-        else:
-            self.transitions, self.predecessors = [[[] for _ in range(self.states)] for _ in range(2)]
-            self.costs = None
-        if GRID_WORLD:
-            self.size = max(get_state_pos(states_name[-1])) + 1
-        else:
-            self.size = num_states
+
+        self.predecessors = [[] for _ in range(self.states)]
+
+        self.transitions = []
+        self.costs = None
+
+        # if GRID_WORLD:
+        #     self.transitions = [[[] for _ in range(4)] for _ in range(self.states)]
+        #     self.predecessors = [[] for _ in range(self.states)]
+        # else:
+        #     self.transitions, self.predecessors = [[[] for _ in range(self.states)] for _ in range(2)]
+        #     self.costs = None
+        # if GRID_WORLD:
+        #     self.size = max(get_state_pos(states_name[-1])) + 1
+        # else:
+        #     self.size = num_states
 
     def add_action_layer(self):
         self.actions += 1
-        for s in range(self.states):
-            self.transitions[s].append([])
+        # for s in range(self.states):
+        #     self.transitions[s].append([])
+        self.transitions.append(sp.dok_matrix((self.states, self.states)))
 
     def add_action(self, source: int, destination: int, action_idx: int, probability: float):
-        self.transitions[source][action_idx].append((destination, probability))
+        self.transitions[action_idx][source, destination] = probability
+        # self.transitions[source][action_idx].append((destination, probability))
         self.predecessors[destination].append(source)
 
     def new_cost(self):
-        self.costs = np.zeros((self.states, self.actions))
+        # self.costs = np.zeros((self.states, self.actions))
+        self.costs = np.zeros((self.actions, self.states))
 
     def add_cost(self, source: int, action_idx: int, cost: float):
-        self.costs[source][action_idx] = cost
+        # self.costs[source][action_idx] = cost
+        self.costs[action_idx][source] = cost
 
     def set_goal(self, new_goal: int):
         self.goal: int = new_goal
@@ -96,12 +109,41 @@ class MDP:
         Q_s = self._bellman_aux(state)
         return int(np.argmin(Q_s)), float(np.min(Q_s))
 
+    def _new_bellman(self, get_policy=True):
+        Q = np.empty((self.actions, self.states))
+        for action in range(self.actions):
+            Q[action] = self.costs[action] + self.transitions[action].dot(self.V)
+        if get_policy:
+            return np.min(Q, axis=0), np.argmin(Q, axis=0)
+        return np.min(Q, axis=0)
+
+    def _policy_matrices(self):
+        probability = np.empty((self.states, self.states))
+        cost = np.zeros(self.states)
+        for action in range(self.actions):
+            src_state_idx = np.nonzero(self.policy == action)[0]
+
+            if src_state_idx.size > 0:
+                try:
+                    probability[src_state_idx, :] = self.transitions[action][src_state_idx, :]
+                except ValueError:
+                    probability[src_state_idx, :] = self.transitions[action][src_state_idx, :].todense()
+
+                cost[src_state_idx] = self.costs[action][src_state_idx]
+
+        return probability, cost
+
     def _init_var(self):
         self.V = np.ones(self.states)
         # self.V = np.zeros(self.states)
         self.V[self.goal] = 0
         self.next_V = self.V.copy()
         self.iter = self.sub_iter = 0
+
+        if not sp.isspmatrix_csr(self.transitions[0]):
+            # for action in range(self.actions):
+            #     self.transitions[action] = sp.csr_matrix(self.transitions[action])
+            self.transitions = [sp.csr_matrix(t) for t in self.transitions]
 
         # max_name_len = max(6, len(states_name[-1]))
         # output_file.write(' '.center(max_name_len) + ' ')
@@ -116,24 +158,32 @@ class MDP:
         # TODO: Implement bar logging
         while max_res >= self.epsilon:
             # print(self.iter, max_res)
-            max_res = 0
-            # self.aux_V = self.V.copy()
             self.iter += 1
 
-            for state in range(self.states):
-                self.next_V[state] = self._bellman_backup(state)[1]
-                max_res = max(max_res, abs(self.next_V[state] - self.V[state]))
+            # max_res = 0
+            #
+            # for state in range(self.states):
+            #     self.next_V[state] = self._bellman_backup(state)[1]
+            #     max_res = max(max_res, abs(self.next_V[state] - self.V[state]))
 
-            # max_res = np.max(np.abs(new_V-self.V))
-            # self.V = self.aux_V
+            self.next_V = self._new_bellman(get_policy=False)
+            max_res = np.max(np.abs(self.next_V - self.V))
             self.V = self.next_V.copy()
 
             # self.V, self.aux_V = self.aux_V, self.V
 
-        self.policy = [self._bellman_backup(state)[0] for state in range(self.states)]
+        # self.policy = [self._bellman_backup(state)[0] for state in range(self.states)]
+        self.policy = self._new_bellman(get_policy=True)[1]
+
+        return self.end_iter()
+
+    def end_iter(self):
         self.run_time = time.time() - self.run_time
         # print(self.policy)
-        return self.policy
+
+        self.policy[self.goal] = -1
+
+        return self.get_policy()
 
     def _make_proper_policy(self):
         policy = np.full(self.states, -1, dtype=int)
@@ -178,24 +228,26 @@ class MDP:
         while True:
             self.iter += 1
 
-            linear_system = np.zeros((self.states, self.states))
-            res = np.zeros(self.states)
+            # linear_system = np.zeros((self.states, self.states))
+            # res = np.zeros(self.states)
+            #
+            # for state in range(self.states):
+            #     if state == self.goal:
+            #         linear_system[state][state] = 1
+            #         continue
+            #
+            #     """
+            #     Vs = 1 + Vs' -> -1 = -Vs + Vs'
+            #     """
+            #
+            #     res[state] = -self.costs[state][self.policy[state]]
+            #     linear_system[state][state] = -1
+            #     for succ, prob in self.transitions[state][self.policy[state]]:
+            #         linear_system[state][succ] += prob
+            # self.V = np.linalg.solve(linear_system, res)
 
-            for state in range(self.states):
-                if state == self.goal:
-                    linear_system[state][state] = 1
-                    continue
-
-                """
-                Vs = 1 + Vs' -> -1 = -Vs + Vs'
-                """
-
-                res[state] = -self.costs[state][self.policy[state]]
-                linear_system[state][state] = -1
-                for succ, prob in self.transitions[state][self.policy[state]]:
-                    linear_system[state][succ] += prob
-
-            self.V = np.linalg.solve(linear_system, res)
+            probability, cost = self._policy_matrices()
+            self.V = np.linalg.solve(sp.eye(self.states, self.states) - probability, cost)
 
             self.update_policy()
 
@@ -203,8 +255,7 @@ class MDP:
                 break
 
             old_policy = self.policy.copy()
-        self.run_time = time.time() - self.run_time
-        return self.get_policy()
+        return self.end_iter()
 
     def modified_policy_iteration(self, initial_policy=None):
         old_policy = np.array([-1])
@@ -228,8 +279,7 @@ class MDP:
 
             old_policy = self.policy.copy()
 
-        self.run_time = time.time() - self.run_time
-        return self.get_policy()
+        return self.end_iter()
 
     def print_iter(self):
         max_name_len = max(6, len(states_name[-1]))
@@ -243,37 +293,46 @@ class MDP:
         # output_file.write('P{}'.format(self.iter) + ';' + ';'.join(actions_symbol[i] for i in self.policy) + '\n')
 
     def update_policy(self):
-        for state in range(self.states):
-            Q_s = self._bellman_aux(state)
-            new_action = int(np.argmin(Q_s))
-            self.next_V[state] = float(Q_s[new_action])
-            if Q_s[new_action] < Q_s[self.policy[state]]:
-                self.policy[state] = new_action
+        self.V, self.policy = self._new_bellman()
+        self.sub_iter += 1
 
-            # self.policy[state], self.next_V[state] = self._bellman_backup(state)
-
-        # end = np.max(np.abs(self.V - self.next_V)) <= self.epsilon
-        self.V = self.next_V.copy()
-        # self.print_iter()
-        # return end
+        # for state in range(self.states):
+        #     Q_s = self._bellman_aux(state)
+        #     new_action = int(np.argmin(Q_s))
+        #     self.next_V[state] = float(Q_s[new_action])
+        #     if Q_s[new_action] < Q_s[self.policy[state]]:
+        #         self.policy[state] = new_action
+        #
+        #     # self.policy[state], self.next_V[state] = self._bellman_backup(state)
+        #
+        # # end = np.max(np.abs(self.V - self.next_V)) <= self.epsilon
+        # self.V = self.next_V.copy()
+        # # self.print_iter()
+        # # return end
 
     def iterative_policy_evaluation(self):
         max_res = self.epsilon
 
+        probability, cost = self._policy_matrices()
+
         # TODO: Implement bar logging
         while max_res >= self.epsilon:
             # print(self.iter, max_res)
-            max_res = 0
 
-            for state in range(self.states):
-                if state != self.goal:
-                    self.next_V[state] = self.costs[state][self.policy[state]] + sum(self.V[succ] * prob
-                                                                                     for succ, prob in
-                                                                                     self.transitions[state][
-                                                                                         self.policy[state]])
-                else:
-                    self.next_V[state] = 0
-                max_res = max(max_res, abs(self.next_V[state] - self.V[state]))
+            # max_res = 0
+            #
+            # for state in range(self.states):
+            #     if state != self.goal:
+            #         self.next_V[state] = self.costs[state][self.policy[state]] + sum(self.V[succ] * prob
+            #                                                                          for succ, prob in
+            #                                                                          self.transitions[state][
+            #                                                                              self.policy[state]])
+            #     else:
+            #         self.next_V[state] = 0
+            #     max_res = max(max_res, abs(self.next_V[state] - self.V[state]))
+
+            self.next_V = cost + probability.dot(self.V)
+            max_res = np.max(np.abs(self.next_V - self.V))
 
             self.V = self.next_V.copy()
             self.sub_iter += 1
@@ -293,7 +352,8 @@ class MDP:
         return self.V
 
     def get_stats(self):
-        return {'Iterations': self.iter,
+        return {'States': self.states,
+                'Iterations': self.iter,
                 'Run_Time:': self.run_time,
                 'Avg_Time': self.run_time / self.iter,
                 'Total_Iter': self.sub_iter if self.sub_iter > 0 else self.iter}
@@ -329,7 +389,8 @@ def read_action(name):
         action_id = len(actions_idx)
         actions_idx[name] = action_id
         actions_symbol[action_id] = name
-        mdp_problem.add_action_layer()
+    mdp_problem.add_action_layer()
+
     line = input_file.readline().strip()
     while not line.startswith('end'):
         src, dest, prob = line.split()[:3]
@@ -394,9 +455,9 @@ def to_str(old):
     return str(old).replace('.', ',')
 
 
-def print_res(policy, iteration):
-    print(f'Executada {iteration}')
-    output_file.write(f'{iteration}\n')
+def print_res(policy, iteration_type):
+    print(f'Executada {iteration_type}')
+    output_file.write(f'{iteration_type}\n')
 
     # size = max(get_state_pos(states_name[-1])) + 1
 
@@ -414,8 +475,7 @@ def print_res(policy, iteration):
     output_file.write(f'\nFinal Grid:\n' if GRID_WORLD else f'\nFinal Policy:\n')
     print_policy(policy, mdp_problem.get_V())
 
-    stats_file.write('{};{};{};'.format(iteration, path.relpath(input_path, input_dir),
-                                        len(grid_idx) if GRID_WORLD else len(states_name)) +
+    stats_file.write('{};{};'.format(iteration_type, path.relpath(input_path, input_dir)) +
                      ';'.join(to_str(val) for val in stats.values()) + '\n')
 
 
@@ -471,9 +531,11 @@ def equiv_policy(p1, p2, v):
     # print('\n'.join([' '.join(str(i) for i in p) for p in [p1, p2]]))
 
     def get_succ_val(pol, st_idx):
-        succ = [j[0] for j in mdp_problem.transitions[st_idx][pol[st_idx]]]
+        # succ = [j[0] for j in mdp_problem.transitions[st_idx][pol[st_idx]]]
+        succ = list(np.nonzero(mdp_problem.transitions[pol[st_idx]][st_idx, :]))
         if not succ:
             return -1
+        succ = [int(s) for s in succ[1]]
         if len(succ) > 1:
             succ = [s for s in succ if s != st_idx]
         return v[succ[0]]
@@ -522,14 +584,13 @@ def solve():
     p2 = mdp_problem.modified_policy_iteration(initial_policy)
     print_res(p2, 'Modified Policy Iteration')
 
-    # p2 = deepcopy(mdp_problem.modified_policy_iteration())
-    p3 = mdp_problem.policy_iteration(initial_policy)
-    print_res(p3, 'Policy Iteration')
+    # p3 = mdp_problem.policy_iteration(initial_policy)
+    # print_res(p3, 'Policy Iteration')
 
-    # if p1 == p2:
-    #     print('Equal:', p1 == p2)
-    # else:
-    #     print('Equiv:', equiv_policy(p1, p2, v))
+    if p1 == p2:
+        print('Equal:', p1 == p2)
+    else:
+        print('Equiv:', equiv_policy(p1, p2, v))
 
 
 def get_basedir_name(dir_path):
@@ -555,7 +616,11 @@ if args['output_path'] is None:
                                 'stats.csv'), 'w')
 else:
     output_path = path.realpath(args['output_path'])
+    makedirs(output_path, exist_ok=True)
     stats_file = open(path.join(output_path, 'stats.csv'), 'w')
+
+stats_file.write('Iteration_Type;Input_File;States;Iterations;Run_Time;Avg_Time;'
+                 'Total_Iterations;Initial_State;Final_State\n')
 
 if path.isdir(input_dir):
     files = [path.join(dp, f) for dp, dn, filenames in walk(input_dir)
@@ -564,8 +629,8 @@ else:
     files = [input_dir]
 
 try:
-    if GRID_WORLD:
-        print(actions_symbol)
+    # if GRID_WORLD:
+    #     print(actions_symbol)
     for input_path in files:
         print(f'Executando MDP para {input_path}')
         mdp_problem = MDP()
