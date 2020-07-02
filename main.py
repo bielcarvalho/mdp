@@ -33,20 +33,20 @@ input_dir = path.realpath('s68.net')
 class MDP:
 
     def __init__(self, num_states=0, epsilon=0.1):
-        self.V = self.next_V = None
+        self.prev_V = self.V = self.costs = None
         self.epsilon = epsilon
         self.iter = self.sub_iter = self.initial_state = self.goal = self.run_time = self.states = -1
         # self.actions = 4 if GRID_WORLD else 0
         self.actions = 0
+        self.states = num_states
 
         if num_states != 0:
             self.set_state_num(num_states)
 
         else:
-            self.states = num_states
             self.transitions = self.predecessors = None
 
-        self.costs = self.initial_policy = self.policy = self.old_policy = None
+        self.initial_policy = self.policy = self.old_policy = self.policy_cost = self.policy_probability = None
 
     def set_state_num(self, num_states):
         self.states = num_states
@@ -54,7 +54,6 @@ class MDP:
         self.predecessors = [[] for _ in range(self.states)]
 
         self.transitions = []
-        self.costs = None
 
         # if GRID_WORLD:
         #     self.transitions = [[[] for _ in range(4)] for _ in range(self.states)]
@@ -100,7 +99,7 @@ class MDP:
 
         for action in range(self.actions):
             if self.transitions[state][action]:
-                Q_s[action] = self.costs[state][action] + sum(self.V[succ] * prob
+                Q_s[action] = self.costs[state][action] + sum(self.prev_V[succ] * prob
                                                               for succ, prob in self.transitions[state][action])
 
         return Q_s
@@ -109,37 +108,43 @@ class MDP:
         Q_s = self._bellman_aux(state)
         return int(np.argmin(Q_s)), float(np.min(Q_s))
 
-    def _new_bellman(self, get_policy=True):
+    def _new_bellman(self, value_only=False):
         Q = np.empty((self.actions, self.states))
         for action in range(self.actions):
-            Q[action] = self.costs[action] + self.transitions[action].dot(self.V)
-        if get_policy:
-            return np.min(Q, axis=0), np.argmin(Q, axis=0)
-        return np.min(Q, axis=0)
+            Q[action] = self.costs[action] + self.transitions[action].dot(self.prev_V)
+        if value_only:
+            return np.min(Q, axis=0)
+        return np.min(Q, axis=0), np.argmin(Q, axis=0)
 
-    def _policy_matrices(self):
-        probability = sp.lil_matrix((self.states, self.states))
-        cost = np.zeros(self.states)
+    def _calculate_operation_matrices(self):
+        # probability = sp.lil_matrix((self.states, self.states))
+        # cost = np.zeros(self.states)
+
+        changes = np.where(self.old_policy != self.policy, self.policy, -1)
+
         for action in range(self.actions):
-            src_states_idx = (self.policy == action).nonzero()[0]
+            src_states_idx = (changes == action).nonzero()[0]
 
             if src_states_idx.size > 0:
-                probability[src_states_idx, :] = self.transitions[action][src_states_idx, :]
+                self.policy_probability[src_states_idx, :] = self.transitions[action][src_states_idx, :]
                 # try:
                 #     probability[src_state_idx, :] = self.transitions[action][src_state_idx, :]
                 # except ValueError:
                 #     probability[src_state_idx, :] = self.transitions[action][src_state_idx, :].todense()
 
-                cost[src_states_idx] = self.costs[action][src_states_idx]
+                self.policy_cost[src_states_idx] = self.costs[action][src_states_idx]
 
-        return probability.tocsr(), cost
+        return self.policy_probability.tocsr()
 
     def _init_var(self):
         self.V = np.ones(self.states)
         # self.V = np.zeros(self.states)
         self.V[self.goal] = 0
-        self.next_V = self.V.copy()
+        # self.prev_V = self.V.copy()
         self.iter = self.sub_iter = 0
+        self.old_policy = np.full(self.states, -1)
+        self.policy_probability = sp.lil_matrix((self.states, self.states))
+        self.policy_cost = np.zeros(self.states)
 
         # if sp.isspmatrix(self.transitions[0]):
         #     self.transitions = [t.toarray() for t in self.transitions]
@@ -161,6 +166,7 @@ class MDP:
         while max_res >= self.epsilon:
             # print(self.iter, max_res)
             self.iter += 1
+            self.prev_V = self.V.copy()
 
             # max_res = 0
             #
@@ -168,14 +174,13 @@ class MDP:
             #     self.next_V[state] = self._bellman_backup(state)[1]
             #     max_res = max(max_res, abs(self.next_V[state] - self.V[state]))
 
-            self.next_V = self._new_bellman(get_policy=False)
-            max_res = np.max(np.abs(self.next_V - self.V))
-            self.V = self.next_V.copy()
+            self.V = self._new_bellman(value_only=True)
+            max_res = np.max(np.abs(self.V - self.prev_V))
 
             # self.V, self.aux_V = self.aux_V, self.V
 
         # self.policy = [self._bellman_backup(state)[0] for state in range(self.states)]
-        self.policy = self._new_bellman(get_policy=True)[1]
+        self.policy = self._new_bellman()[1]
 
         return self.end_iter()
 
@@ -218,7 +223,6 @@ class MDP:
         return 0
 
     def policy_iteration(self, initial_policy=None):
-        old_policy = np.array([-1])
         self._init_var()
 
         if initial_policy is not None:
@@ -248,19 +252,18 @@ class MDP:
             #         linear_system[state][succ] += prob
             # self.V = np.linalg.solve(linear_system, res)
 
-            probability, cost = self._policy_matrices()
-            self.V = np.linalg.solve(sp.eye(self.states, self.states) - probability, cost)
+            probability = self._calculate_operation_matrices()
+            self.V = np.linalg.solve(sp.eye(self.states, self.states) - probability, self.policy_cost)
 
             self.update_policy()
 
-            if np.array_equal(old_policy, self.policy):
+            if np.array_equal(self.old_policy, self.policy):
                 break
 
-            old_policy = self.policy.copy()
+            self.old_policy = self.policy.copy()
         return self.end_iter()
 
     def modified_policy_iteration(self, initial_policy=None):
-        old_policy = np.array([-1])
         self._init_var()
 
         if initial_policy is not None:
@@ -269,17 +272,21 @@ class MDP:
         else:
             self._make_proper_policy()
 
-        while True:  # DO-WHILE
+        while not np.array_equal(self.old_policy, self.policy):  # DO-WHILE
             self.iter += 1
 
             self.iterative_policy_evaluation()
 
+            self.old_policy = self.policy.copy()
+
             self.update_policy()
 
-            if np.array_equal(old_policy, self.policy):
+            if np.max(np.abs(self.V - self.prev_V)) < self.epsilon:
                 break
 
-            old_policy = self.policy.copy()
+            # if np.array_equal(self.old_policy, self.policy):
+            #     break
+            # self.old_policy = self.policy.copy()
 
         return self.end_iter()
 
@@ -295,6 +302,7 @@ class MDP:
         # output_file.write('P{}'.format(self.iter) + ';' + ';'.join(actions_symbol[i] for i in self.policy) + '\n')
 
     def update_policy(self):
+        self.prev_V = self.V.copy()
         self.V, self.policy = self._new_bellman()
         self.sub_iter += 1
 
@@ -315,7 +323,7 @@ class MDP:
     def iterative_policy_evaluation(self):
         max_res = self.epsilon
         # t1 = time.time()
-        probability, cost = self._policy_matrices()
+        probability = self._calculate_operation_matrices()
         # print(f'Matrices {self.iter}: {time.time() - t1}')
         # start = self.sub_iter
         # t1 = time.time()
@@ -334,10 +342,11 @@ class MDP:
             #         self.next_V[state] = 0
             #     max_res = max(max_res, abs(self.next_V[state] - self.V[state]))
 
-            self.next_V = cost + probability.dot(self.V)
-            max_res = np.max(np.abs(self.next_V - self.V))
+            self.prev_V = self.V.copy()
+            self.V = self.policy_cost + probability.dot(self.prev_V)
+            max_res = np.max(np.abs(self.V - self.prev_V))
 
-            self.V = self.next_V.copy()
+
             self.sub_iter += 1
 
             # print(max_res)
@@ -592,10 +601,10 @@ def solve():
     # p3 = mdp_problem.policy_iteration(initial_policy)
     # print_res(p3, 'Policy Iteration')
 
-    # if p1 == p2:
-    #     print('Equal:', p1 == p2)
-    # else:
-    #     print('Equiv:', equiv_policy(p1, p2, v))
+    if p1 == p2:
+        print('Equal:', p1 == p2)
+    else:
+        print('Equiv:', equiv_policy(p1, p2, v))
 
 
 def get_basedir_name(dir_path):
@@ -617,15 +626,22 @@ input_dir = path.realpath(args['input_path'])
 # output_path = path.realpath(args['output_path']) if args['output_path'] is not None else None
 if args['output_path'] is None:
     output_path = None
-    stats_file = open(path.join(input_dir if path.isdir(input_dir) else path.dirname(input_dir),
-                                'stats.csv'), 'w')
+    stats_path = path.join(input_dir if path.isdir(input_dir) else path.dirname(input_dir),
+                                'stats.csv')
+    # stats_file = open(path.join(input_dir if path.isdir(input_dir) else path.dirname(input_dir),
+    #                             'stats.csv'), 'w')
 else:
     output_path = path.realpath(args['output_path'])
     makedirs(output_path, exist_ok=True)
-    stats_file = open(path.join(output_path, 'stats.csv'), 'w')
+    stats_path = path.join(output_path, 'stats.csv')
+    # stats_file = open(path.join(output_path, 'stats.csv'), 'w')
 
-stats_file.write('Iteration_Type;Input_File;States;Iterations;Run_Time;Avg_Time;'
-                 'Total_Iterations;Initial_State;Final_State\n')
+if path.exists(stats_path):
+    stats_file = open(stats_path, 'a')
+else:
+    stats_file = open(stats_path, 'w')
+    stats_file.write('Iteration_Type;Input_File;States;Iterations;Run_Time;Avg_Time;'
+                     'Total_Iterations;Initial_State;Final_State\n')
 
 if path.isdir(input_dir):
     files = [path.join(dp, f) for dp, dn, filenames in walk(input_dir)
