@@ -260,7 +260,6 @@ class MDP:
             if np.array_equal(self.old_policy, self.policy):
                 break
 
-            self.old_policy = self.policy.copy()
         return self.end_iter()
 
     def modified_policy_iteration(self, initial_policy=None):
@@ -276,8 +275,6 @@ class MDP:
             self.iter += 1
 
             self.iterative_policy_evaluation()
-
-            self.old_policy = self.policy.copy()
 
             self.update_policy()
 
@@ -303,6 +300,7 @@ class MDP:
 
     def update_policy(self):
         self.prev_V = self.V.copy()
+        self.old_policy = self.policy.copy()
         self.V, self.policy = self._new_bellman()
         self.sub_iter += 1
 
@@ -545,14 +543,23 @@ def equiv_policy(p1, p2, v):
     # print('\n'.join([' '.join(str(i) for i in p) for p in [p1, p2]]))
 
     def get_succ_val(pol, st_idx):
+        a = pol[st_idx]
+        # print(a)
         # succ = [j[0] for j in mdp_problem.transitions[st_idx][pol[st_idx]]]
-        succ = list(np.nonzero(mdp_problem.transitions[pol[st_idx]][st_idx]))
+
+        succ = list(mdp_problem.transitions[a][st_idx].nonzero()[1])
+
+        # print(' '.join(str(int(s)) for s in m))
+
+        # m = (mdp_problem.transitions[a][st_idx, :] == int(pol[st_idx])).nonzero()[1]
+        # succ = [int(s) for s in np.where(mdp_problem.transitions[a][st_idx] == pol[st_idx])[1]]
+        # succ = list(np.nonzero(mdp_problem.transitions[pol[st_idx]][st_idx]))
         if not succ:
             return -1
-        succ = [int(s) for s in succ[1]]
-        if len(succ) > 1:
-            succ = [s for s in succ if s != st_idx]
-        return v[succ[0]]
+        # if len(succ) > 1:
+        #     succ = [s for s in succ if s != st_idx]
+        # return v[succ[0]]
+        return mdp_problem.costs[a][st_idx] + sum(mdp_problem.transitions[a][st_idx, s] * v[s] for s in succ)
 
     equiv = True
 
