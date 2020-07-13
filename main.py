@@ -40,18 +40,21 @@ class MDP:
         self.actions = actions
         self.states = num_states
         self.predecessors = predecessors
-        self.transitions = [] if transitions is None else transitions
+        self.probability_transitions = [] if transitions is None else transitions
         # self.transitions_bkp = None
 
-        if predecessors is None and num_states != 0:
-            self.predecessors = [[] for _ in range(self.states)]
-
+        if num_states != 0:
+            self.set_state_num(num_states)
 
         self.initial_policy = self.policy = self.old_policy = self.policy_cost = self.policy_probability = None
 
     def set_state_num(self, num_states):
         self.states = num_states
-        self.predecessors = [[] for _ in range(self.states)]
+        if self.predecessors is None:
+            self.predecessors = [[] for _ in range(self.states)]
+        # self.policy_probability = [None for _ in range(self.states)]
+        # self.policy_cost = np.zeros(self.states)
+
         # self.transitions_bkp = [[] for _ in range(self.states)]
 
         # if GRID_WORLD:
@@ -65,18 +68,16 @@ class MDP:
         self.actions += 1
         # for s in range(self.states):
         #     self.transitions_bkp[s].append([])
-        self.transitions.append(sp.dok_matrix((self.states, self.states)))
+        self.probability_transitions.append(sp.dok_matrix((self.states, self.states)))
 
     def add_action(self, source: int, destination: int, action_idx: int, probability: float):
-        self.transitions[action_idx][source, destination] = probability
+        self.probability_transitions[action_idx][source, destination] = probability
         # self.transitions_bkp[source][action_idx].append((destination, probability))
         self.predecessors[destination].append(source)
 
     def new_cost(self):
         # self.costs = np.zeros((self.states, self.actions))
-        # self.costs = np.zeros((self.actions, self.states))
         self.costs = np.full((self.actions, self.states), np.inf)
-        self.costs[:, self.goal] = 0
 
 
     def add_cost(self, source: int, action_idx: int, cost: float):
@@ -85,11 +86,14 @@ class MDP:
 
     def set_goal(self, new_goal: int):
         self.goal: int = new_goal
+        ind = np.where(self.costs[:, self.goal] == np.inf)
+        if ind[0].size > 0:
+            self.costs[ind[0], self.goal] = 0
 
     def set_initial_state(self, new_initial_state: int):
         self.initial_state = new_initial_state
 
-    # def _bellman_backup(self, state: int):
+    # def _dummy_bellman_backup(self, state: int):
     #     if state == self.goal:
     #         return -1, 0
     #
@@ -104,49 +108,71 @@ class MDP:
     def _bellman_backup(self, value_only=False):
         Q = np.empty((self.actions, self.states))
         for action in range(self.actions):
-            Q[action] = self.costs[action] + self.transitions[action].dot(self.prev_V)
+            Q[action] = self.costs[action] + self.probability_transitions[action].dot(self.prev_V)
         if value_only:
-            return np.min(Q, axis=0)
-        return np.min(Q, axis=0), np.argmin(Q, axis=0)
+            return Q.min(axis=0)
+        return Q.min(axis=0), Q.argmin(axis=0)
+
+    def _update_curr_transitions(self, changed_states):
+        for state in changed_states:
+            self.policy_probability[state] = self.probability_transitions[self.policy[state]][state]
+            self.policy_cost[state] = self.costs[self.policy[state]][state]
 
     def _calculate_operation_matrices(self):
         t1 = time.time()
 
-        changes = np.where(self.old_policy != self.policy, self.policy, -1)
-        for action in range(self.actions):
-            src_states_idx = (changes == action).nonzero()[0]
+        self._update_curr_transitions(np.where(self.old_policy != self.policy)[0])
 
-            if src_states_idx.size > 0:
-                self.policy_probability[src_states_idx] = self.transitions[action][src_states_idx]
-                # self.policy_probability[src_states_idx] = self.transitions[action][src_states_idx].todense()
-                self.policy_cost[src_states_idx] = self.costs[action][src_states_idx]
-
-        if changes[self.goal] != -1:
-            self.policy_probability[self.goal] = 0
+        # changes = np.where(self.old_policy != self.policy, self.policy, -1)
+        # for action in range(self.actions):
+        #     src_states_idx = (changes == action).nonzero()[0]
+        #
+        #     if src_states_idx.size > 0:
+        #         self.policy_probability[src_states_idx] = self.probability_transitions[action][src_states_idx]
+        #         # self.policy_probability[src_states_idx] = self.transitions_bkp[action][src_states_idx]
+        #         self.policy_cost[src_states_idx] = self.costs[action][src_states_idx]
+        #
+        if self.old_policy[self.goal] != self.policy[self.goal]:
+            self.policy_probability[self.goal] = sp.csr_matrix(np.zeros(self.states))
+        # if changes[self.goal] != -1:
+            # self.policy_probability[self.goal] = 0
             self.policy_cost[self.goal] = 0
 
         self.oper_matrix_time += time.time() - t1
 
-        return self.policy_probability.tocsr()
+        # return sp.vstack(self.policy_probability, format='csr')
+        return sp.bmat(self.policy_probability, format='csr')
+        # return self.policy_probability.tocsr()
 
-    def _init_var(self):
+    def _init_var(self, initial_policy=None):
         self.V = np.ones(self.states)
-        # self.V = np.zeros(self.states)
         self.V[self.goal] = 0
         self.iter = self.sub_iter = 0
         self.old_policy = np.full(self.states, -1)
-        self.policy_probability = sp.lil_matrix((self.states, self.states))
-        # self.policy_probability = np.zeros((self.states, self.states))
-        self.policy_cost = np.zeros(self.states)
 
-        if not sp.isspmatrix_csr(self.transitions[0]):
-            self.transitions = [sp.csr_matrix(t) for t in self.transitions]
+        if initial_policy is not None:
+            # self.policy_probability = [None for _ in range(self.states)]
+            self.policy_probability = np.empty((self.states, 1), dtype=object)
+            # self.policy_probability = sp.lil_matrix((self.states, self.states))
+            self.policy_cost = np.zeros(self.states)
+
+            self.initial_policy = np.array(initial_policy)
+            self.policy = self.initial_policy.copy()
+
+        if not sp.isspmatrix_csr(self.probability_transitions[0]):
+            self.probability_transitions = [t.tocsr() for t in self.probability_transitions]
+            # self.transitions_bkp = [t.todense() for t in self.transitions]
 
         # max_name_len = max(6, len(states_name[-1]))
         # print(' '.center(max_name_len) + ' ' + ' '.join(state.center(max_name_len) for state in states_name))
 
         self.oper_matrix_time = self.bellman_time = self.solve_time = 0
         self.run_time = time.time()
+
+        if initial_policy is not None:
+            self._update_curr_transitions(np.arange(self.states))
+            self.policy_probability[self.goal] = sp.csr_matrix(np.zeros(self.states))
+            self.policy_cost[self.goal] = 0
 
     def value_iteration(self):
         self._init_var()
@@ -190,13 +216,13 @@ class MDP:
                     define_predecessors.append(predecessor)
 
         policy[self.goal] = -1
-        self.policy = policy
-        self.initial_policy = self.policy.copy()
+        # self.policy = policy
+        # self.initial_policy = self.policy.copy()
         return policy
 
     def _get_proper_action(self, state, successor):
         for action in range(self.actions):
-            if self.transitions[action][state, successor] > 0:
+            if self.probability_transitions[action][state, successor] > 0:
                 return action
         # for idx, action in enumerate(self.transitions[state]):
         #     if len(action) >= 1:
@@ -206,13 +232,14 @@ class MDP:
         return 0
 
     def policy_iteration(self, initial_policy=None):
-        self._init_var()
+        if initial_policy is None:
+            initial_policy = self._make_proper_policy()
+        self._init_var(initial_policy)
 
-        if initial_policy is not None:
-            self.initial_policy = np.array(initial_policy)
-            self.policy = self.initial_policy.copy()
-        else:
-            self._make_proper_policy()
+        # if initial_policy is not None:
+        #     self.initial_policy = np.array(initial_policy)
+        #     self.policy = self.initial_policy.copy()
+
 
         while not np.array_equal(self.old_policy, self.policy):
             self.iter += 1
@@ -231,8 +258,6 @@ class MDP:
             #         linear_system[state][succ] += prob
             # self.V = np.linalg.solve(linear_system, res)
 
-
-
             probability = self._calculate_operation_matrices()
             t = time.time()
             self.V = spsolve(sp.eye(self.states, self.states) - probability, self.policy_cost)
@@ -240,18 +265,21 @@ class MDP:
             self.solve_time += time.time() - t
 
             self.update_policy()
+            # self.print_iter()
 
 
         return self.end_iter()
 
     def modified_policy_iteration(self, initial_policy=None):
-        self._init_var()
+        if initial_policy is None:
+            initial_policy = self._make_proper_policy()
+        self._init_var(initial_policy)
 
-        if initial_policy is not None:
-            self.initial_policy = np.array(initial_policy)
-            self.policy = self.initial_policy.copy()
-        else:
-            self._make_proper_policy()
+        # if initial_policy is not None:
+        #     self.initial_policy = np.array(initial_policy)
+        #     self.policy = self.initial_policy.copy()
+        # else:
+        #     self._make_proper_policy()
 
         while not np.array_equal(self.old_policy, self.policy):  # DO-WHILE
             self.iter += 1
@@ -364,7 +392,7 @@ def read_action(name):
     if GRID_WORLD:
         action_id = actions_idx[name]
     else:
-        action_id = len(actions_idx)
+        action_id = mdp_problem.actions
         actions_idx[name] = action_id
         actions_symbol[action_id] = name
     mdp_problem.add_action_layer()
@@ -397,11 +425,11 @@ def read_state(initial=True):
 
 def read_input():
     try:
-        if not GRID_WORLD:
-            actions_idx.clear()
-            # actions = {-1: 'G'}
-            actions_symbol.clear()
-            actions_symbol[-1] = 'G'
+        # if not GRID_WORLD:
+        #     actions_idx.clear()
+        #     # actions = {-1: 'G'}
+        #     actions_symbol.clear()
+        #     actions_symbol[-1] = 'G'
 
         while True:
             line = input_file.readline().strip()
@@ -420,6 +448,7 @@ def read_input():
 
     except EOFError:
         pass
+    actions_idx['-'] = -1
 
 
 def get_state_pos(name: str):
@@ -511,16 +540,15 @@ def grid_print(policy, output_file, v=None):
 def equiv_policy(p1, p2, v):
     def get_succ_val(pol, st_idx):
         a = pol[st_idx]
-        succ = list(mdp_problem.transitions[a][st_idx].nonzero()[1])
+        succ = list(mdp_problem.probability_transitions[a][st_idx].nonzero()[1])
         if not succ:
             return -1
-        return mdp_problem.costs[a][st_idx] + sum(mdp_problem.transitions[a][st_idx, s] * v[s] for s in succ)
+        return mdp_problem.costs[a][st_idx] + sum(mdp_problem.probability_transitions[a][st_idx, s] * v[s] for s in succ)
 
     equiv = True
 
     for i in range(len(p1)):
         if p1[i] != p2[i]:
-            # print(f'{i} ({states_name[i]}): {actions_symbol[p1[i]]}, {actions_symbol[p2[i]]}')
             v1, v2 = get_succ_val(p1, i), get_succ_val(p2, i)
             if v1 != v2:
                 equiv = False
@@ -549,37 +577,32 @@ def read_initial_policy():
 
 def solve(vi=True, pi=True, mpi=False):
     read_input()
-    # if not GRID_WORLD:
-    #     print(actions_symbol)
 
     initial_policy = read_initial_policy()
+
+    # a = np.where(mdp_problem.costs == np.inf)
+    # if a.size > 0:
+    #     print(a)
 
     if vi:
         p1 = mdp_problem.value_iteration()
         # print_res(mdp_problem.value_iteration(), 'VI')
         print_res(p1, 'VI')
 
-    v = mdp_problem.get_V().copy()
+    # v = mdp_problem.get_V().copy()
 
     if pi:
         p3 = mdp_problem.policy_iteration(initial_policy)
         # print_res(mdp_problem.policy_iteration(initial_policy), 'PI')
         print_res(p3, 'PI')
 
-    #
     if mpi:
         p2 = mdp_problem.modified_policy_iteration(initial_policy)
         # print_res(mdp_problem.modified_policy_iteration(initial_policy), 'MPI')
         print_res(p2, 'MPI')
 
-
-    print('PI == VI' if p1 == p3 else f'PI ~ VI: {equiv_policy(p1, p3, v)}')
-    print('PI == MPI' if p2 == p3 else f'PI ~ MPI: {equiv_policy(p2, p3, v)}')
-
-    # if p1 == p2:
-    #     print('Equal:', p1 == p2)
-    # else:
-    #     print('Equiv:', equiv_policy(p1, p2, v))
+    # print('PI == VI' if p1 == p3 else f'PI ~ VI: {equiv_policy(p1, p3, v)}')
+    # print('PI == MPI' if p2 == p3 else f'PI ~ MPI: {equiv_policy(p2, p3, v)}')
 
 
 def get_basedir_name(dir_path):
@@ -591,8 +614,8 @@ ap.add_argument("-i", "--input_path", default='TestesGrid',
                 help=f"arquivo ou pasta de entrada para leitura")
 ap.add_argument("-o", "--output_path", default=None,
                 help=f"pasta para salvar arquivos de saida")
-ap.add_argument("-g", "--generic_mdp", default=False, action='store_true',
-                help=f"usar para problemas que os estados nao estao dispostos em um grid")
+ap.add_argument("-gw", "--grid_world", default=False, action='store_true',
+                help=f"usar para representar saida por meio de um grid")
 ap.add_argument("-vi", "--value_iteration", default=False, action='store_true',
                 help=f"executar iteracao de valor")
 ap.add_argument("-pi", "--policy_iteration", default=False, action='store_true',
@@ -600,12 +623,12 @@ ap.add_argument("-pi", "--policy_iteration", default=False, action='store_true',
 ap.add_argument("-mpi", "--modified_policy_iteration", default=False, action='store_true',
                 help=f"executar iteracao de politica modificada")
 ap.add_argument("-e", "--epsilon", default=0.1, type=float,
-                help=f"taxa de erro maxima aceitavel")
+                help=f"epsilon desejado (padrao 0,1)")
 args = vars(ap.parse_args())
 
 assert args['value_iteration'] or args['policy_iteration'] or args['modified_policy_iteration'], 'Ao menos um algoritmo de iteracao deve ser selecionado'
 
-GRID_WORLD = not args['generic_mdp']
+GRID_WORLD = args['grid_world']
 input_dir = path.realpath(args['input_path'])
 
 if args['output_path'] is None:
@@ -642,10 +665,7 @@ try:
         else:
             output_path = path.join(output_dir, path.splitext(path.relpath(input_path, input_dir))[0])
             makedirs(path.dirname(output_path), exist_ok=True)
-            # output_file = path.join(output_path, path.basename(path.dirname(input_path)) + '_' +
-            #                         path.basename(path.splitext(input_path)[0]) + '_out.txt')
-        # print('Saida: ', output_file)
-        # output_file = open(output_file, 'w')
+
         solve(args['value_iteration'], args['policy_iteration'], args['modified_policy_iteration'])
         input_file.close()
 
