@@ -1,0 +1,41 @@
+states
+	s0, s1, s2, s3, s4, sg
+endstates
+
+action a0
+	s0 s2 1.000000 1.000000
+	s1 s2 1.000000 1.000000
+	s2 s4 1.000000 1.000000
+	s3 s4 1.000000 1.000000
+	s4 sg 1.000000 1.000000
+endaction
+
+action a1
+	s0 s1 1.000000 1.000000
+	s2 s1 1.000000 1.000000
+	s4 s3 0.400000 0.400000 
+	s4 sg 0.600000 0.600000
+endaction
+
+cost
+	s0 a0 1.000000
+	s0 a1 1.000000
+	s1 a0 1.000000
+	s2 a0 1.000000
+	s2 a1 1.000000
+	s3 a0 1.000000
+	s4 a0 5.000000
+	s4 a1 2.000000
+endcost
+
+initialstate
+	s0
+endinitialstate
+
+goalstate
+	sg
+endgoalstate
+
+Policy:
+a0 a0 a0 a0 a1 0 
+
